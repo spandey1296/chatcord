@@ -1,47 +1,75 @@
-var express = require('express'),
-	app = express(),
-	server = require('http').createServer(app),
-	io = require('socket.io').listen(server);
-	usernames = [];
+const path = require('path');
+const http = require('http');
+const express = require('express');
+const socketio = require('socket.io');
+const formatMessage = require('./utils/messages');
+const {
+  userJoin,
+  getCurrentUser,
+  userLeave,
+  getRoomUsers
+} = require('./utils/users');
 
-server.listen(process.env.PORT || 3000);
-console.log('Server Running...');
+const app = express();
+const server = http.createServer(app);
+const io = socketio(server);
 
-app.get('/', function(req, res){
-	res.sendFile(__dirname + '/index.html');
+// Set static folder
+app.use(express.static(path.join(__dirname, 'public')));
+
+const botName = 'ChatCord Bot';
+
+// Run when client connects
+io.on('connection', socket => {
+  socket.on('joinRoom', ({ username, room }) => {
+    const user = userJoin(socket.id, username, room);
+
+    socket.join(user.room);
+
+    // Welcome current user
+    socket.emit('message', formatMessage(botName, 'Welcome to ChatCord!'));
+
+    // Broadcast when a user connects
+    socket.broadcast
+      .to(user.room)
+      .emit(
+        'message',
+        formatMessage(botName, `${user.username} has joined the chat`)
+      );
+
+    // Send users and room info
+    io.to(user.room).emit('roomUsers', {
+      room: user.room,
+      users: getRoomUsers(user.room)
+    });
+  });
+
+  // Listen for chatMessage
+  socket.on('chatMessage', msg => {
+    const user = getCurrentUser(socket.id);
+
+    io.to(user.room).emit('message', formatMessage(user.username, msg));
+  });
+
+  // Runs when client disconnects
+  socket.on('disconnect', () => {
+    const user = userLeave(socket.id);
+
+    if (user) {
+      io.to(user.room).emit(
+        'message',
+        formatMessage(botName, `${user.username} has left the chat`)
+      );
+
+      // Send users and room info
+      io.to(user.room).emit('roomUsers', {
+        room: user.room,
+        users: getRoomUsers(user.room)
+      });
+    }
+  });
 });
 
-io.sockets.on('connection', function(socket){
-	console.log('Socket Connected...');
+const PORT = process.env.PORT || 3000;
 
-	socket.on('new user', function(data, callback){
-		if(usernames.indexOf(data) != -1){
-			callback(false);
-		} else {
-			callback(true);
-			socket.username = data;
-			usernames.push(socket.username);
-			updateUsernames();
-		}
-	});
-
-	// Update Usernames
-	function updateUsernames(){
-		io.sockets.emit('usernames', usernames);
-	}
-
-	// Send Message
-	socket.on('send message', function(data){
-		io.sockets.emit('new message', {msg: data, user:socket.username});
-	});
-
-	// Disconnect
-	socket.on('disconnect', function(data){
-		if(!socket.username){
-			return;
-		}
-
-		usernames.splice(usernames.indexOf(socket.username), 1);
-		updateUsernames();
-	});
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
